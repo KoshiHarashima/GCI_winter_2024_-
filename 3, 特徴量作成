@@ -1,0 +1,130 @@
+#目標:時系列解析で有効になる特徴量をなるべく出す。
+
+# 過去 n 日間の累積 cm_flg 計算
+def rolling_sum(df, column, days):
+    return df[column].rolling(window=days, min_periods=1).sum()
+
+merged_df["cm_flg_90d"] = rolling_sum(merged_df, "cm_flg", 90)
+merged_df["cm_flg_14d"] = rolling_sum(merged_df, "cm_flg", 14)
+merged_df["cm_flg_3d"] = rolling_sum(merged_df, "cm_flg", 3)
+
+# search_cnt の lag 変数作成
+def lag_variable(df, column, days):
+    return df[column].shift(days)
+
+merged_df["search_cnt_lag_90d"] = lag_variable(merged_df, "search_cnt", 90)
+merged_df["search_cnt_lag_30d"] = lag_variable(merged_df, "search_cnt", 30)
+merged_df["search_cnt_lag_7d"] = lag_variable(merged_df, "search_cnt", 7)
+
+# acc_get_cnt の lag 変数作成
+merged_df["acc_get_cnt_lag_30d"] = lag_variable(merged_df, "acc_get_cnt", 30)
+merged_df["acc_get_cnt_lag_14d"] = lag_variable(merged_df, "acc_get_cnt", 14)
+merged_df["acc_get_cnt_lag_7d"] = lag_variable(merged_df, "acc_get_cnt", 7)
+
+# call_num の lag 変数作成
+merged_df["call_num_lag_1d"] = merged_df["call_num"].shift(1)
+merged_df["call_num_lag_3d"] = merged_df["call_num"].shift(3)
+merged_df["call_num_lag_7d"] = merged_df["call_num"].shift(7)
+merged_df["call_num_lag_14d"] = merged_df["call_num"].shift(14)
+merged_df["call_num_lag_30d"] = merged_df["call_num"].shift(30)
+
+# 欠損値を線形補間
+lag_columns = ["call_num_lag_1d", "call_num_lag_3d", "call_num_lag_7d", "call_num_lag_14d"]
+merged_df[lag_columns] = merged_df[lag_columns].interpolate(method="linear").fillna(method="bfill").fillna(method="ffill")
+
+# 移動平均を計算する関数
+def moving_average(df, column, window):
+    return df[column].rolling(window=window, min_periods=1).mean()
+
+# search_cnt の移動平均
+merged_df["search_cnt_ma_3d"] = moving_average(merged_df, "search_cnt", 3)
+merged_df["search_cnt_ma_7d"] = moving_average(merged_df, "search_cnt", 7)
+merged_df["search_cnt_ma_30d"] = moving_average(merged_df, "search_cnt", 30)
+merged_df["search_cnt_ma_90d"] = moving_average(merged_df, "search_cnt", 90)
+
+# acc_get_cnt の移動平均
+merged_df["acc_get_cnt_ma_3d"] = moving_average(merged_df, "acc_get_cnt", 3)
+merged_df["acc_get_cnt_ma_7d"] = moving_average(merged_df, "acc_get_cnt", 7)
+merged_df["acc_get_cnt_ma_30d"] = moving_average(merged_df, "acc_get_cnt", 30)
+merged_df["acc_get_cnt_ma_90d"] = moving_average(merged_df, "acc_get_cnt", 90)
+
+# call_num の移動平均を計算
+merged_df["call_num_ma_30d"] = moving_average(merged_df, "call_num", 30)
+merged_df["call_num_ma_90d"] = moving_average(merged_df, "call_num", 90)
+
+# 欠損値を補完（線形補間 → 前方補完 → 後方補完）
+merged_df[["call_num_ma_30d", "call_num_ma_90d"]] = merged_df[["call_num_ma_30d", "call_num_ma_90d"]].interpolate(method="linear").fillna(method="bfill").fillna(method="ffill")
+
+# 短期移動平均（1週間）と長期移動平均（1ヶ月）の差分 (diff) と比率 (ratio) を計算する関数
+def calculate_diff_ratio(df, short_ma, long_ma, column_name):
+    df[f"{column_name}_ma_diff"] = df[short_ma] - df[long_ma]
+    df[f"{column_name}_ma_ratio"] = df[short_ma] / df[long_ma]
+    return df
+
+# search_cnt の diff & ratio
+merged_df = calculate_diff_ratio(merged_df, "search_cnt_ma_7d", "search_cnt_ma_30d", "search_cnt")
+
+# acc_get_cnt の diff & ratio
+merged_df = calculate_diff_ratio(merged_df, "acc_get_cnt_ma_7d", "acc_get_cnt_ma_30d", "acc_get_cnt")
+
+# 交差項（search_cnt, acc_get_cnt, call_num, cm_flg の組み合わせ）を作成
+interaction_features = ["search_cnt", "acc_get_cnt", "cm_flg"]
+
+# すべての組み合わせを作成
+for i in range(len(interaction_features)):
+    for j in range(i + 1, len(interaction_features)):
+        col1, col2 = interaction_features[i], interaction_features[j]
+        merged_df[f"{col1}_x_{col2}"] = merged_df[col1] * merged_df[col2]
+
+# 2018-11-01から2018-11-15まで1で、他は0となるようなコラム。名前はflag_anounce。これは軽減税率について注意書きのようなものが発表された日で、局所的に上がっているため対応した。
+merged_df['flag_anounce'] = 0
+merged_df.loc[(merged_df['cdr_date'] >= '2018-11-01') & (merged_df['cdr_date'] <= '2018-11-15'), 'flag_anounce'] = 1
+
+# 駆け込み需要を近似するために行った。2020-06-01から0.01を毎日0.115倍していく。09-30付近で10000くらいの値になる。
+# 必要な日付を設定
+start_growth_date = pd.to_datetime("2020-06-01")
+end_growth_date = pd.to_datetime("2020-09-30")
+fixed_value_date = pd.to_datetime("2019-06-01")
+zero_start_date = pd.to_datetime("2020-10-01")
+growth_factor = 0.115
+
+# 'custom_trend' の初期化
+merged_df["custom_trend"] = 0.01  # デフォルトは 0.01
+
+# 日数を計算
+merged_df["days_from_growth_start"] = (merged_df["cdr_date"] - start_growth_date).dt.days
+
+# 2020-07-01 から 2020-09-30 の範囲で 0.115 倍で増やす
+growth_mask = (merged_df["cdr_date"] >= start_growth_date) & (merged_df["cdr_date"] <= end_growth_date)
+merged_df.loc[growth_mask, "custom_trend"] = 0.01 * (growth_factor ** merged_df.loc[growth_mask, "days_from_growth_start"])
+
+# 2019-07-01 より前は 0.01 に固定
+fixed_value_mask = merged_df["cdr_date"] < fixed_value_date
+merged_df.loc[fixed_value_mask, "custom_trend"] = 0.01
+
+# 2020-10-01 以降は 0 に固定
+zero_value_mask = merged_df["cdr_date"] >= zero_start_date
+merged_df.loc[zero_value_mask, "custom_trend"] = 0
+
+# 'dow' が 5 または 6 の場合は 0 にする
+merged_df.loc[merged_df["dow"].isin([5,6]), "custom_trend"] = 0
+
+#"flag_holiday"がTrueの場合は0にする。
+merged_df.loc[merged_df["holiday_flag"] == True, "custom_trend"] = 0
+
+# 不要な列を削除
+merged_df.drop(columns=["days_from_growth_start"], inplace=True)
+merged_df.rename(columns={"custom_trend": "rush_trend"}, inplace=True)
+
+#以下、dataの整形
+
+# dowとdow_nameがかぶっているため削除
+merged_df = merged_df.drop(columns=["dow_name"], errors="ignore")
+
+# Trueを1に、Falseを0に変換
+merged_df["holiday_flag"] = merged_df["holiday_flag"].astype('Int64')
+merged_df["day_before_holiday_flag"] = merged_df["day_before_holiday_flag"].astype('Int64')
+
+# 前の値で埋める (forward fill) → 先頭に欠損がある場合は後の値で埋める (backward fill)
+merged_df['call_num_lag_30d'].fillna(method='ffill', inplace=True)
+merged_df['call_num_lag_30d'].fillna(method='bfill', inplace=True)
