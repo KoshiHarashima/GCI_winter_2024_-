@@ -1,0 +1,82 @@
+from google.colab import drive
+drive.mount('/content/drive')
+
+import pandas as pd
+import numpy as np
+
+# ファイルのpath
+calender_data_path = '/content/drive/MyDrive/GCI_最終課題/calender_data.csv'
+regi_acc_get_data_path = '/content/drive/MyDrive/GCI_最終課題/regi_acc_get_data_transform.csv'
+cm_data_path = '/content/drive/MyDrive/GCI_最終課題/cm_data.csv'
+regi_call_data_path = '/content/drive/MyDrive/GCI_最終課題/regi_call_data_transform.csv'
+
+# ファイルの読み込み
+calender_data = pd.read_csv(calender_data_path, parse_dates=["cdr_date"])
+regi_acc_get_data = pd.read_csv(regi_acc_get_data_path, parse_dates=["cdr_date"])
+cm_data = pd.read_csv(cm_data_path, parse_dates=["cdr_date"])
+regi_call_data = pd.read_csv(regi_call_data_path, parse_dates=["cdr_date"])
+
+# 期間の拡張（2018-03-01 ～ 2020-03-31）(これはlag変数をうまく組み込むため)
+date_range = pd.date_range(start="2018-03-01", end="2020-03-31", freq="D")
+
+# --- Calender Data の処理 ---
+# cdr_date を拡張
+calender_extended = pd.DataFrame({"cdr_date": date_range})
+calender_extended = calender_extended.merge(calender_data, on="cdr_date", how="left")
+
+# カレンダー情報を再計算
+calender_extended["dow"] = calender_extended["cdr_date"].dt.dayofweek
+calender_extended["dow_name"] = calender_extended["cdr_date"].dt.day_name()
+calender_extended["woy"] = calender_extended["cdr_date"].dt.isocalendar().week
+calender_extended["wom"] = (calender_extended["cdr_date"].dt.day - 1) // 7 + 1
+calender_extended["doy"] = calender_extended["cdr_date"].dt.dayofyear
+
+# 2018-03, 2018-04, 2018-05 の holiday_flag, day_before_holiday_flag, holiday_name を NaN に(最後は消すので)
+mask = calender_extended["cdr_date"].dt.strftime("%Y-%m").isin(["2018-03", "2018-04", "2018-05"])
+calender_extended.loc[mask, ["holiday_flag", "day_before_holiday_flag", "holiday_name"]] = np.nan
+
+# --- Regi Acc Get Data Transform の処理 ---
+regi_acc_get_extended = pd.DataFrame({"cdr_date": date_range})
+regi_acc_get_extended = regi_acc_get_extended.merge(regi_acc_get_data, on="cdr_date", how="left")
+
+  # 拡張した部分の acc_get_cnt を NaN に
+regi_acc_get_extended.loc[regi_acc_get_extended["cdr_date"].isin(date_range.difference(regi_acc_get_data["cdr_date"])), "acc_get_cnt"] = np.nan
+
+# --- Cm Data は変更なし ---
+cm_data_extended = cm_data.copy()
+
+# --- Regi Call Data Transform の処理 ---
+regi_call_extended = pd.DataFrame({"cdr_date": date_range})
+regi_call_extended = regi_call_extended.merge(regi_call_data, on="cdr_date", how="left")
+
+# 拡張した部分の search_cnt を NaN に
+regi_call_extended.loc[regi_call_extended["cdr_date"].isin(date_range.difference(regi_call_data["cdr_date"])), "search_cnt"] = np.nan
+
+
+# データの結合
+merged_df = calender_extended.merge(regi_acc_get_extended, on="cdr_date", how="left") \
+                            .merge(cm_data_extended, on="cdr_date", how="left") \
+                            .merge(regi_call_extended, on="cdr_date", how="left")
+
+# holiday_name の削除(期間が2年程度なので重要でないと判断した)
+merged_df.drop(columns=["holiday_name"], inplace=True, errors='ignore')
+
+# cdr_date から week を作成（週の開始日を統一）
+merged_df["week"] = merged_df["cdr_date"] - pd.to_timedelta(merged_df["cdr_date"].dt.weekday, unit="D")
+
+# gt_service_df の再読み込み
+gt_service_path = '/content/drive/MyDrive/GCI_最終課題/gt_service_name.csv'
+gt_service_df = pd.read_csv(gt_service_path, parse_dates=["week"])
+
+# week の処理
+gt_service_df["week"] = gt_service_df["week"].dt.to_period('W').dt.start_time
+
+# merged_df に結合
+merged_df = merged_df.merge(gt_service_df, on="week", how="left")
+merged_df["search_cnt"] = merged_df["search_cnt_y"].combine_first(merged_df["search_cnt_x"])
+
+# １週間ごとのデータしかないので、search_cnt の補完（線形補間）
+merged_df["search_cnt"] = merged_df["search_cnt"].interpolate(method="linear").fillna(method="bfill").fillna(method="ffill")
+
+# 不要なカラムを削除
+merged_df.drop(columns=["search_cnt_x", "search_cnt_y", "week"], inplace=True, errors='ignore')  
