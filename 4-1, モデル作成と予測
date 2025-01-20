@@ -1,0 +1,256 @@
+#4-1では、通常時2020-03-01から2020-03-31のcall_numを、他の特徴量がcmと日付関連以外で与えられていないとして、予測し、
+#その結果を評価する(実際の実務で使った際に有用であるかを確かめる。。
+#それまでの２年間のデータを用いて、VARを用いて特徴量を作成し、XGBoostを用いて特徴量を選択し、XGBoostで予測するモデルを作った。
+#結果：精度としてはARIMAより格段に良くなった。RNNといった深層学習がデータ不足などもありうまくいかない中で最善であったと思う。
+
+#VARとXGBoostのinstall
+!pip install statsmodels
+import statsmodels.tsa.api as smt
+import xgboost as xgb
+from sklearn.model_selection import train_test_split, TimeSeriesSplit
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+
+#2020-02-29までのデータだけをとる。
+filtered_before_04_df = merged_df[merged_df["cdr_date"] <= "2020-03-31"]
+# 安定した2020年3月の問い合わせ予測
+filtered_before_04_df_1 = filtered_before_04_df[(filtered_before_04_df["cdr_date"] >= "2018-06-01") & (filtered_before_04_df["cdr_date"] <= "2020-02-29")]
+
+# 'cdr_date' (日付) と 'call_num' (目的変数) を除いた特徴量を取得
+var_features = filtered_before_04_df_1.drop(columns=
+ ['cdr_date','dow','woy','wom','doy','day_before_holiday_flag','financial_year','holiday_flag',
+  'cm_flg_90d','cm_flg','cm_flg_14d','cm_flg_3d','rush_trend','flag_anounce',
+  'call_num_lag_1d','call_num_lag_3d', 'call_num_lag_7d','call_num_lag_14d', 'call_num_lag_30d',
+  'search_cnt_lag_90d', 'search_cnt_lag_30d','search_cnt_lag_7d',
+  'acc_get_cnt_lag_30d','acc_get_cnt_lag_14d', 'acc_get_cnt_lag_7d',
+  'search_cnt_ma_3d','search_cnt_ma_7d', 'search_cnt_ma_30d', 'search_cnt_ma_90d',
+  'acc_get_cnt_ma_3d', 'acc_get_cnt_ma_7d', 'acc_get_cnt_ma_30d',
+  'acc_get_cnt_ma_90d', 'call_num_ma_30d', 'call_num_ma_90d',
+  'search_cnt_ma_diff', 'search_cnt_ma_ratio', 'acc_get_cnt_ma_diff','acc_get_cnt_ma_ratio',
+  'search_cnt_x_acc_get_cnt','search_cnt_x_cm_flg', 'acc_get_cnt_x_cm_flg'], errors='ignore')
+
+# Determine the maximum lags dynamically based on available data
+maxlags = min(10, len(var_features) // 10)  # Reduce maxlags to ensure estimation feasibility
+
+# Fit the VAR model with the adjusted maxlags
+var_model = smt.VAR(var_features)
+var_results = var_model.fit(maxlags=maxlags)
+
+# Forecast the features for the period 2020-03-01 to 2020-03-31
+forecast_steps = 31  # Number of days in March 2020
+forecast_input = var_features.values[-var_results.k_ar:]  # Last observed values for forecasting
+var_forecast = var_results.forecast(y=forecast_input, steps=forecast_steps)
+
+# Create a DataFrame for the forecasted features
+forecast_dates = pd.date_range(start='2020-03-01', periods=forecast_steps, freq='D')
+forecast_df = pd.DataFrame(var_forecast, columns=var_features.columns, index=forecast_dates)
+
+#最後の１ヶ月間をVARで特徴量を作ったものができた。
+# filtered_dfをコピー
+df = filtered_before_04_df.copy()
+
+# 2020-03-01から2020-03-31のデータについて、指定したカラム以外をNaNにする
+start_date = '2020-03-01'
+end_date = '2020-03-31'
+date_range = pd.to_datetime(pd.date_range(start=start_date, end=end_date))
+
+columns_to_keep = ['cdr_date','dow','woy','wom','doy','day_before_holiday_flag','financial_year','holiday_flag',
+                   'cm_flg','cm_flg_90d', 'cm_flg_14d','cm_flg_3d','rush_trend','flag_anounce']
+columns_to_nan = [col for col in df.columns if col not in columns_to_keep]
+
+for date in date_range:
+  date_str = date.strftime('%Y-%m-%d')
+  df.loc[df['cdr_date'] == date_str, columns_to_nan] = np.nan
+# forecast_dfのindexと、dfのcdr_dateを参照して、cc_get_cnt、search_cnt、call_numを代入
+for index, row in forecast_df.iterrows():
+    date_str = index.strftime('%Y-%m-%d')
+    df.loc[df['cdr_date'] == date_str, 'acc_get_cnt'] = row['acc_get_cnt']
+    df.loc[df['cdr_date'] == date_str, 'search_cnt'] = row['search_cnt']
+    df.loc[df['cdr_date'] == date_str, 'call_num'] = row['call_num']
+
+# 削除したいコラム名をリストで指定
+columns_to_drop = [
+    "call_num_lag_1d", "call_num_lag_3d", "call_num_lag_7d", "call_num_lag_14d", "call_num_lag_30d",
+    "search_cnt_lag_90d", "search_cnt_lag_30d", "search_cnt_lag_7d",
+    "acc_get_cnt_lag_30d", "acc_get_cnt_lag_14d", "acc_get_cnt_lag_7d",
+    "search_cnt_ma_3d", "search_cnt_ma_7d", "search_cnt_ma_30d", "search_cnt_ma_90d",
+    "acc_get_cnt_ma_3d", "acc_get_cnt_ma_7d", "acc_get_cnt_ma_30d", "acc_get_cnt_ma_90d",
+    "call_num_ma_30d", "call_num_ma_90d",
+    "search_cnt_ma_diff", "search_cnt_ma_ratio",
+    "acc_get_cnt_ma_diff", "acc_get_cnt_ma_ratio",
+    "search_cnt_x_acc_get_cnt", "search_cnt_x_cm_flg", "acc_get_cnt_x_cm_flg"
+]
+# DataFrameから該当コラムを削除
+df.drop(columns=columns_to_drop, inplace=True, errors="ignore")
+
+# 欠損値を埋める処理
+df["call_num_lag_1d"] = df["call_num"].shift(1)
+df["call_num_lag_3d"] = df["call_num"].shift(3)
+df["call_num_lag_7d"] = df["call_num"].shift(7)
+df["call_num_lag_14d"] = df["call_num"].shift(14)
+df["call_num_lag_30d"] = df["call_num"].shift(30)
+
+df["search_cnt_lag_90d"] = df["search_cnt"].shift(90)
+df["search_cnt_lag_30d"] = df["search_cnt"].shift(30)
+df["search_cnt_lag_7d"] = df["search_cnt"].shift(7)
+
+df["acc_get_cnt_lag_30d"] = df["acc_get_cnt"].shift(30)
+df["acc_get_cnt_lag_14d"] = df["acc_get_cnt"].shift(14)
+df["acc_get_cnt_lag_7d"] = df["acc_get_cnt"].shift(7)
+
+df["search_cnt_ma_3d"] = df["search_cnt"].rolling(window=3, min_periods=1).mean()
+df["search_cnt_ma_7d"] = df["search_cnt"].rolling(window=7, min_periods=1).mean()
+df["search_cnt_ma_30d"] = df["search_cnt"].rolling(window=30, min_periods=1).mean()
+df["search_cnt_ma_90d"] = df["search_cnt"].rolling(window=90, min_periods=1).mean()
+
+df["acc_get_cnt_ma_3d"] = df["acc_get_cnt"].rolling(window=3, min_periods=1).mean()
+df["acc_get_cnt_ma_7d"] = df["acc_get_cnt"].rolling(window=7, min_periods=1).mean()
+df["acc_get_cnt_ma_30d"] = df["acc_get_cnt"].rolling(window=30, min_periods=1).mean()
+df["acc_get_cnt_ma_90d"] = df["acc_get_cnt"].rolling(window=90, min_periods=1).mean()
+
+df["call_num_ma_30d"] = df["call_num"].rolling(window=30, min_periods=1).mean()
+df["call_num_ma_90d"] = df["call_num"].rolling(window=90, min_periods=1).mean()
+
+df["search_cnt_ma_diff"] = df["search_cnt_ma_7d"] - df["search_cnt_ma_30d"]
+df["search_cnt_ma_ratio"] = df["search_cnt_ma_7d"] / df["search_cnt_ma_30d"]
+
+df["acc_get_cnt_ma_diff"] = df["acc_get_cnt_ma_7d"] - df["acc_get_cnt_ma_30d"]
+df["acc_get_cnt_ma_ratio"] = df["acc_get_cnt_ma_7d"] / df["acc_get_cnt_ma_30d"]
+
+df["search_cnt_x_acc_get_cnt"] = df["search_cnt"] * df["acc_get_cnt"]
+df["search_cnt_x_cm_flg"] = df["search_cnt"] * df["cm_flg"]
+df["acc_get_cnt_x_cm_flg"] = df["acc_get_cnt"] * df["cm_flg"]
+
+#データをstart_dateである2018-06-01からにした。
+df = df[df["cdr_date"] >= "2018-06-01"]
+
+# 欠損値を線形補間
+lag_columns = ["call_num_lag_1d", "call_num_lag_3d", "call_num_lag_7d", "call_num_lag_14d","call_num_lag_30d"]
+df[lag_columns] = df[lag_columns].interpolate(method="linear").fillna(method="bfill").fillna(method="ffill")
+
+# 特徴量とターゲット（call_num）を設定
+target = "call_num"
+features = [col for col in df.columns if col not in ["wom", "financial_year", "cdr_date", target]]
+# 特徴量データとターゲットデータを取得
+X = df[features]
+y = df[target]
+
+#多重共線性を回避する
+# 共線性を確認するために相関行列を表示
+correlation_matrix = X.corr()
+
+# 高い相関を持つペアを取得（絶対値で判定）
+high_corr_pairs = (correlation_matrix.where(abs(correlation_matrix) > 0.8)
+                   .stack()
+                   .index.tolist())
+
+# 一方の特徴量だけを削除対象に含める
+to_drop = set()
+processed = set()  # 処理済みの特徴量を追跡
+
+for feature_1, feature_2 in high_corr_pairs:
+    if feature_1 != feature_2:
+        # feature_1 がまだ処理されていない場合に feature_2 を削除
+        if feature_1 not in processed:
+            to_drop.add(feature_2)
+            processed.add(feature_1)
+            processed.add(feature_2)
+
+# ドロップ対象から'cm_flg'を除外
+to_drop = [col for col in to_drop_list if col != 'cm_flg']
+# 相関関係が高い特徴量を削除
+X = X.drop(columns=to_drop)
+# yには正しい値を入れる。
+y = filtered_df["call_num"]
+# データを時系列で分割（３月分の最後の31日間をテストセット）
+train_size = len(X) - 31
+X_train, X_test = X.iloc[:train_size], X.iloc[train_size:]
+y_train, y_test = y.iloc[:train_size], y.iloc[train_size:]
+
+# XGBoostのデータセットを作成
+dtrain = xgb.DMatrix(X_train, label=y_train)
+dtest = xgb.DMatrix(X_test, label=y_test)
+
+# 初期パラメータ設定（過学習を防ぎながら精度を高める）gridでパラメータを探す。
+params = {
+    "objective": "reg:squarederror",
+    "eval_metric": "rmse",
+    "booster": "gbtree",
+    "eta": 0.01,  # 学習率（低めに設定して過学習を防ぐ）
+    "max_depth": 6,  # 木の深さ（適度な深さでバランスを取る）
+    "subsample": 0.8,  # データの一部を使用（過学習防止）
+    "colsample_bytree": 0.8,  # 特徴量の一部を使用（過学習防止）
+    "alpha": 0.1,  # L1正則化（特徴量の選択を促す）
+    "lambda": 1,  # L2正則化（モデルの複雑さを抑える）
+    "seed": 42,
+}
+
+# 交差検証用のデータ分割
+tscv = TimeSeriesSplit(n_splits=5)
+
+# ハイパーパラメータの最適化（グリッドサーチ）
+best_rmse = float("inf")
+best_params = params.copy()
+
+for max_depth in [4, 6, 8]:
+    for eta in [0.01, 0.05, 0.1]:
+        for subsample in [0.6, 0.8, 1.0]:
+            for colsample_bytree in [0.6, 0.8, 1.0]:
+                temp_params = params.copy()
+                temp_params.update({"max_depth": max_depth, "eta": eta, "subsample": subsample, "colsample_bytree": colsample_bytree})
+
+                # クロスバリデーション
+                cv_results = xgb.cv(temp_params, dtrain, num_boost_round=1000, early_stopping_rounds=50, nfold=5, verbose_eval=False)
+                mean_rmse = cv_results["test-rmse-mean"].min()
+
+                if mean_rmse < best_rmse:
+                    best_rmse = mean_rmse
+                    best_params = temp_params
+
+# 最適化されたパラメータでモデルを学習
+final_model = xgb.train(best_params, dtrain, num_boost_round=1000, early_stopping_rounds=50, evals=[(dtrain, "train"), (dtest, "test")], verbose_eval=False)
+
+# 予測
+y_pred = final_model.predict(dtest)
+
+# 精度評価
+mae = mean_absolute_error(y_test, y_pred)
+rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+
+# 結果表示
+model_performance = {
+    "Best Parameters": best_params,
+    "Test MAE": mae,
+    "Test RMSE": rmse,
+}
+
+model_performance
+
+# モデルを保存し、再度展開する。
+with open('/content/drive/MyDrive/GCI_最終課題/final_model.pkl_5', 'wb') as f:
+  pickle.dump(final_model, f)
+with open('/content/drive/MyDrive/GCI_最終課題/final_model.pkl_5', 'rb') as f:
+    loaded_model = pickle.load(f)
+
+# 特徴量の重要度をplotする
+importance = loaded_model.get_score(importance_type="weight")
+importance_df = pd.DataFrame(importance.items(), columns=["Feature", "Importance"]).sort_values(by="Importance", ascending=False)
+
+# 結果を可視化
+plt.figure(figsize=(8, 5))
+plt.barh(importance_df["Feature"], importance_df["Importance"])
+plt.xlabel("Importance")
+plt.ylabel("Feature")
+plt.title("Feature Importance (XGBoost)")
+plt.gca().invert_yaxis()  # 重要度が高い順に表示
+plt.show()
+
+# 予測結果もplotする
+plt.figure(figsize=(12, 6))
+plt.plot(results_df.index, results_df['y_test'], label="Actual")
+plt.plot(results_df.index, results_df['y_pred'], label="Predicted")
+plt.xlabel("Date")
+plt.ylabel("Call Number")
+plt.title("XGBoost Prediction vs. Actual")
+plt.legend()
+plt.grid(True)
+plt.show()
