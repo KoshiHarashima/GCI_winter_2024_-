@@ -254,3 +254,27 @@ plt.title("XGBoost Prediction vs. Actual")
 plt.legend()
 plt.grid(True)
 plt.show()
+
+#補足：ARIMAの予測(最後の31日間)
+from statsmodels.tsa.arima.model import ARIMA
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+import numpy as np
+
+# データの準備 (例として 'call_num' を使用)
+data = merged_df['call_num']
+train_data = data[:-31]  # 最後の3日間を除くデータで学習
+test_data = data[-31:]   # 最後の3日間をテストデータ
+
+# ARIMAモデルの構築と学習 (p, d, q の値は適宜調整)
+model = ARIMA(train_data, order=(4, 1, 0))  # 例: (5, 1, 0)
+model_fit = model.fit()
+
+# 予測
+predictions = model_fit.predict(start=len(train_data), end=len(data)-1)
+
+# MAEとRMSEの計算
+mae = mean_absolute_error(test_data, predictions)
+rmse = np.sqrt(mean_squared_error(test_data, predictions))
+
+print(f"MAE: {mae}")
+print(f"RMSE: {rmse}")
