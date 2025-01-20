@@ -1,0 +1,109 @@
+import matplotlib.pyplot as plt
+
+#問い合わせ数の推移(week)
+regi_call_data['cdr_date'] = pd.to_datetime(regi_call_data['cdr_date'])
+monthly_call_num_sum = regi_call_data.groupby(pd.Grouper(key='cdr_date', freq='W'))['call_num'].sum()
+plt.figure(figsize=(12, 6))
+plt.plot(monthly_call_num_sum.index, monthly_call_num_sum.values)
+plt.xlabel('Month')
+plt.ylabel('Sum of call_num')
+plt.title('Weekly Sum of call_num')
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+
+#account獲得数の推移(week)
+regi_acc_get_data['cdr_date'] = pd.to_datetime(regi_acc_get_data['cdr_date'])
+monthly = regi_acc_get_data.groupby(pd.Grouper(key='cdr_date', freq='W'))['acc_get_cnt'].sum()
+plt.figure(figsize=(12, 6))
+plt.plot(monthly.index, monthly.values)
+plt.xlabel('Month')
+plt.ylabel('Account Get Count')
+plt.title('Account Get Count Over Time (Weekly)')
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+
+#cmの有無の推移(month)
+cm_data['cdr_date'] = pd.to_datetime(cm_data['cdr_date'])
+monthly_cm_flg_sum = cm_data.groupby(pd.Grouper(key='cdr_date', freq='M'))['cm_flg'].sum()
+plt.figure(figsize=(12, 6))
+plt.plot(monthly_cm_flg_sum.index, monthly_cm_flg_sum.values)
+plt.xlabel('Month')
+plt.ylabel('Sum of cm_flg')
+plt.title('Monthly Sum of cm_flg')
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+
+#検索数の推移(week)
+merged_df['cdr_date'] = pd.to_datetime(merged_df['cdr_date'])
+monthly_search_cnt_sum = merged_df.groupby(pd.Grouper(key='cdr_date', freq='W'))['search_cnt'].mean()#１週間すべて同じ値としているため
+plt.figure(figsize=(12, 6))
+plt.plot(monthly_search_cnt_sum.index, monthly_search_cnt_sum.values)
+plt.xlabel('Month')
+plt.ylabel('Sum of search_cnt')
+plt.title('Weekly Sum of search_cnt')
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+
+#累積アカウント獲得数(アカウント数の変化を見るため)
+merged_data['acc_get_cnt_cumulative'] = merged_data['acc_get_cnt'].cumsum()
+
+merged_data['cdr_date'] = pd.to_datetime(merged_data['cdr_date'])
+monthly_cumulative = merged_data.groupby(pd.Grouper(key='cdr_date', freq='W'))['acc_get_cnt_cumulative'].sum()
+plt.figure(figsize=(12, 6))
+plt.plot(monthly_cumulative.index, monthly_cumulative.values)
+plt.xlabel('Month')
+plt.ylabel('Cumulative Account Get Count')
+plt.title('Cumulative Account Get Count (Weekly)')
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+
+#他社サービスの検索数(プレゼン資料用)の読み込み
+Air_search = pd.read_csv('/content/drive/MyDrive/レジ/Air_レジ_re.csv')
+Square_search = pd.read_csv('/content/drive/MyDrive/レジ/スクエア_re.csv')
+Sumareji_search = pd.read_csv('/content/drive/MyDrive/レジ/スマレジ_re.csv')
+Yubireji_search = pd.read_csv('/content/drive/MyDrive/レジ/ユビレジ_re.csv')
+Ureji_search = pd.read_csv('/content/drive/MyDrive/レジ/Uレジ_re.csv')
+Yunipos_search = pd.read_csv('/content/drive/MyDrive/レジ/ユニポス_re.csv')
+Yunipos_search['date'] = pd.to_datetime(Yunipos_search['date'])
+Yunipos_search['date'] = Yunipos_search['date'].dt.strftime('%b-%y')
+
+Air_search = Air_search[Air_search['date'].str.endswith(tuple(['-18', '-19', '-20', '-21']))]
+Square_search = Square_search[Square_search['date'].str.endswith(tuple(['-18', '-19', '-20', '-21']))]
+Sumareji_search = Sumareji_search[Sumareji_search['date'].str.endswith(tuple(['-18', '-19', '-20', '-21']))]
+Yubireji_search = Yubireji_search[Yubireji_search['date'].str.endswith(tuple(['-18', '-19', '-20', '-21']))]
+Ureji_search = Ureji_search[Ureji_search['date'].str.endswith(tuple(['-18', '-19', '-20', '-21']))]
+
+# プロットの作成
+plt.plot(Air_search['date'], Air_search['search_cnt'], label='AirREGI', color='blue', linewidth=2)
+plt.plot(Square_search['date'], Square_search['search_cnt'], label='SquareREGI', color='yellow', linewidth=2)
+plt.plot(Sumareji_search['date'], Sumareji_search['search_cnt'], label='SUMAREGI', color='red', linewidth=2)
+plt.plot(Yubireji_search['date'], Yubireji_search['search_cnt'], label='YUBIREGI', color='purple', linewidth=2)
+plt.plot(Ureji_search['date'], Ureji_search['search_cnt'], label='USENREGI', color='green', linewidth=2)
+
+# 軸ラベルとタイトル
+plt.xlabel('Date', fontsize=14)
+plt.ylabel('Search Count', fontsize=14)
+plt.title('Search Trends Over Time', fontsize=16)
+
+# x軸の目盛りを調整
+plt.xticks(
+    ticks=range(0, len(Air_search['date']), max(1, len(Air_search['date']) // 20)),  # 適度な間隔で目盛りを設定
+    labels=[Air_search['date'].iloc[i] for i in range(0, len(Air_search['date']), max(1, len(Air_search['date']) // 20))],
+    rotation=45,
+    fontsize=12
+)
+
+# y軸ラベルのサイズ
+plt.yticks(fontsize=12)
+
+# 凡例の設定
+plt.legend(fontsize=12, loc='upper left')
+
+plt.tight_layout()
+plt.show()
+
