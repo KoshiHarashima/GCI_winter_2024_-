@@ -1,0 +1,242 @@
+#PyCaretのinstall(随時)
+#モデルの作成と選択を自動で行える。最後の12日間(２週間程度)の予測を簡単に行なった(EDAとして)。
+
+# データの読み込み
+data = final_merged_data
+data = data.drop(columns=['holiday_name'])
+a = data['search_cnt'].median()
+data['search_cnt'] = data['search_cnt'].fillna(a)
+columns = ['dow', "cdr_date", "day_before_holiday_flag", "holiday_flag", "cm_flg", "search_cnt", "acc_get_cnt", "call_num"]
+data = data[columns]
+# Convert 'cdr_date' to datetime and set as index
+data['cdr_date'] = pd.to_datetime(data['cdr_date'])  # Convert to datetime
+data.set_index('cdr_date', inplace=True)  # Set as index
+
+# Convert boolean/categorical columns to numeric
+# Explicitly handle non-numeric values and NaNs
+for col in ['day_before_holiday_flag', 'holiday_flag', 'cm_flg','dow']:
+    # Replace non-numeric values with NaN
+    data[col] = pd.to_numeric(data[col], errors='coerce')
+    # Fill NaNs with a suitable strategy (e.g., median, mean, or 0)
+    data[col] = data[col].fillna(data[col].median())
+    # Convert to desired data type
+    data[col] = data[col].astype('float64')
+
+# Ensure all columns are numeric before applying get_dummies
+numeric_cols = data.select_dtypes(include=np.number).columns.tolist()
+data = data[numeric_cols]
+
+# 目的変数の設定
+target = 'call_num'  # 予測したいカラム名に変更してください
+
+# 時系列データのセットアップ
+s = setup(data, target=target, fh=12, fold=3, session_id=42)  # fh: 予測期間
+
+# モデルの比較
+arima = create_model('arima')
+
+#時系列解析
+plot_model(plot = 'ts')
+
+#要素に分解
+plot_model(plot = 'decomp')
+
+#plotした。
+plot_model(estimator = arima, plot = 'forecast', data_kwargs = {'fh' : 12})
+
+＃modelごとの比較(ARIMAもそこそこいいらしい)
+best_model = compare_models(n_select = 3,turbo = False)
+
+#RNNでも予測をした。データが足りずいい予測ができていない印象であった。過学習し過ぎてしまい、将来の予測に早く立たなかった。
+import pandas as pd
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
+
+# データの前処理
+# 'cdr_date'列を日付型に変換
+merged_data['cdr_date'] = pd.to_datetime(merged_data['cdr_date'])
+merged_data = merged_data.set_index('cdr_date')
+
+# 目的変数の選択（例：'regi_acc_get'）
+target_column = 'call_num'
+data = merged_data[[target_column]]
+
+# データの正規化
+scaler = MinMaxScaler()
+data[target_column] = scaler.fit_transform(data)
+
+# データセットの作成
+def create_dataset(dataset, look_back=1):
+    X, Y = [], []
+    for i in range(len(dataset)-look_back-1):
+        a = dataset[i:(i+look_back), 0]
+        X.append(a)
+        Y.append(dataset[i + look_back, 0])
+    return np.array(X), np.array(Y)
+
+look_back = 10  # 過去10日分のデータを使用
+X, Y = create_dataset(data.values, look_back)
+
+# データを訓練データとテストデータに分割
+train_size = int(len(X) * 0.8)
+X_train, X_test = X[0:train_size], X[train_size:len(X)]
+Y_train, Y_test = Y[0:train_size], Y[train_size:len(Y)]
+
+# データの形をLSTMの入力に合うように変更
+X_train = np.reshape(X_train, (X_train.shape[0], X_train.shape[1], 1))
+X_test = np.reshape(X_test, (X_test.shape[0], X_test.shape[1], 1))
+
+# RNNモデルの作成
+model = Sequential()
+model.add(LSTM(units=50, return_sequences=True, input_shape=(X_train.shape[1], 1)))
+model.add(LSTM(units=50))
+model.add(Dense(1))
+
+model.compile(loss='mean_squared_error', optimizer='adam')
+model.fit(X_train, Y_train, epochs=50, batch_size=1, verbose=2) # エポック数とバッチサイズを調整
+
+# 予測
+train_predict = model.predict(X_train)
+test_predict = model.predict(X_test)
+
+# 逆正規化
+train_predict = scaler.inverse_transform(train_predict)
+Y_train = scaler.inverse_transform([Y_train])
+test_predict = scaler.inverse_transform(test_predict)
+Y_test = scaler.inverse_transform([Y_test])
+
+# 評価指標（例：RMSE）
+from sklearn.metrics import mean_squared_error
+import math
+trainScore = math.sqrt(mean_squared_error(Y_train[0], train_predict[:,0]))
+print('Train Score: %.2f RMSE' % (trainScore))
+testScore = math.sqrt(mean_squared_error(Y_test[0], test_predict[:,0]))
+print('Test Score: %.2f RMSE' % (testScore))
+
+#補足：Transfer Entropy(たまたま授業でやっていたため取り上げた、プレゼン資料用)
+#使い回し
+from sklearn.preprocessing import MinMaxScaler
+
+def transfer_entropy(X, Y, k=1, bins=10):
+    """
+    時系列データXからYへの転移エントロピーを計算する関数
+
+    Args:
+        X: 時系列データX (Pandas Series)
+        Y: 時系列データY (Pandas Series)
+        k: 埋め込み次元 (デフォルト: 1)
+        bins: 離散化のビン数 (デフォルト: 10)
+
+    Returns:
+        XからYへの転移エントロピー
+    """
+
+    # データの正規化
+    scaler = MinMaxScaler()
+    X_scaled = scaler.fit_transform(X.values.reshape(-1, 1)).flatten()
+    Y_scaled = scaler.fit_transform(Y.values.reshape(-1, 1)).flatten()
+
+    # データの離散化
+    X_disc = np.digitize(X_scaled, np.linspace(0, 1, bins))
+    Y_disc = np.digitize(Y_scaled, np.linspace(0, 1, bins))
+
+    n = len(X_disc)
+    if n - k < 1:
+        raise ValueError("時系列の長さが埋め込み次元kよりも短いです")
+
+    # 確率分布の計算
+    joint_probs = {}
+    for i in range(k, n):
+        key = (X_disc[i - k], Y_disc[i - k], Y_disc[i])
+        joint_probs[key] = joint_probs.get(key, 0) + 1
+
+    for key in joint_probs:
+        joint_probs[key] /= (n - k)
+
+    # 転移エントロピーの計算
+    te = 0
+    for key in joint_probs:
+        denominator = (marginal_prob(Y_disc, key[1], key[2]) * marginal_prob(X_disc, key[0]))
+        if denominator == 0:
+            denominator = 1e-10  # 分母が0にならないように小さな値を加える
+        te += joint_probs[key] * np.log2(joint_probs[key] / denominator)
+
+    return te
+
+def marginal_prob(time_series, t_minus_k, t_current=None):
+    """
+    周辺確率を計算する関数
+
+    Args:
+        time_series: 時系列データ
+        t_minus_k: 時刻t-kの値
+        t_current: 現在の時刻の値 (オプション)
+
+    Returns:
+        周辺確率
+    """
+
+    n = len(time_series)
+    count = 0
+    if t_current is None:
+        for i in range(k, n):
+            if time_series[i - k] == t_minus_k:
+                count += 1
+    else:
+        for i in range(k, n):
+            if time_series[i - k] == t_minus_k and time_series[i] == t_current:
+                count += 1
+    return count / n
+
+def calculate_all_transfer_entropies(time_series_data, k=1, bins=10):
+    """
+    全ての時系列データのペア間の転移エントロピーを計算する関数
+
+    Args:
+        time_series_data: 時系列データのリストまたはNumPy配列
+        k: 埋め込み次元
+        bins: 離散化のビン数
+
+    Returns:
+        転移エントロピーの値を格納した辞書 (キーは時系列データのインデックスのタプル)
+    """
+
+    num_series = len(time_series_data)
+    te_results = {}
+
+    for i in range(num_series):
+        for j in range(i+1, num_series):
+            X = time_series_data[i]
+            Y = time_series_data[j]
+
+            te = transfer_entropy(X, Y, k, bins)
+            te_results[(i, j)] = te
+
+    return te_results
+
+
+# 計算してみた
+#問い合わせ数とアカウント獲得数
+time_series = [weekly_data_re['call_num'], weekly_data_re['acc_get_cnt']]
+all_te = calculate_all_transfer_entropies(time_series)
+print("All Transfer Entropies:", all_te)
+time_series = [weekly_data_re['acc_get_cnt'],weekly_data_re['call_num']]
+all_te = calculate_all_transfer_entropies(time_series)
+print("All Transfer Entropies:", all_te)
+
+#問い合わせ数と検索数
+time_series = [weekly_data_re['call_num'], weekly_data_re['search_cnt']]
+all_te = calculate_all_transfer_entropies(time_series)
+print("All Transfer Entropies:", all_te)
+time_series = [weekly_data_re['search_cnt'], weekly_data_re['call_num']]
+all_te = calculate_all_transfer_entropies(time_series)
+print("All Transfer Entropies:", all_te)
+
+#アカウント獲得数と検索数
+time_series = [weekly_data_re['acc_get_cnt'], weekly_data_re['search_cnt']]
+all_te = calculate_all_transfer_entropies(time_series)
+print("All Transfer Entropies:", all_te)
+time_series = [weekly_data_re['search_cnt'], weekly_data_re['acc_get_cnt']]
+all_te = calculate_all_transfer_entropies(time_series)
+print("All Transfer Entropies:", all_te)
